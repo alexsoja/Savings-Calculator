@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 
+if st.button("🔄 Reload Page"):
+    st.session_state.clear()
+    st.rerun()
 st.title("💰 Savings Growth Predictor")
 
 balance = st.number_input("Enter Current Balance:", min_value=0.0)
@@ -63,38 +66,94 @@ def load_qa():
 
 qa_df = load_qa()
 
-# ---- Fuzzy match function ----
+# ------------------------------- #
+# ------- ANSWER DETECTOR ------- #
+# ------------------------------- #
+
+# Helper Function
+def best_match_from(df_subset, user_lower):
+    if df_subset.empty:
+        return "I'm not sure about that one yet!", None
+
+    questions = df_subset["question"].tolist()
+    scores = [
+        difflib.SequenceMatcher(None, user_lower, q.lower()).ratio()
+        for q in questions
+    ]
+
+    best_idx = scores.index(max(scores))
+    best_question = df_subset.iloc[best_idx]["question"] # Returns the best question detected (useful for debugging and undestanding)
+    best_answer = df_subset.iloc[best_idx]["answer"]
+
+    return best_answer, best_question
+
+
+import re
+
 def get_best_answer(user_input):
-    questions = qa_df["question"].tolist()
-    
-    # find closest match
-    match = difflib.get_close_matches(user_input.lower(), [q.lower() for q in questions], n=1, cutoff=0.3)
-    
-    if match:
-        matched_question = match[0]
-        answer_row = qa_df[qa_df["question"].str.lower() == matched_question].iloc[0]
-        return answer_row["answer"]
-    else:
-        return random.choice([
-            "I'm not sure I can answer that question yet, I'm still learning!",
-            "Hmm… I don't think my data covers that one.",
-            "Good question! I don't have that answer yet."
-        ])
+    user_lower = user_input.lower()
+
+    # --- 1. CDs ---
+    if re.search(r"\b(cd|certificate of deposit)\b", user_lower):
+        subset = qa_df[qa_df["question"].str.contains(r"\b(cd|certificate of deposit)\b", case=False, regex=True)]
+        return best_match_from(subset, user_lower)
+
+    # --- 2. Credit Cards ---
+    if "credit card" in user_lower:
+        subset = qa_df[qa_df["question"].str.contains("credit card", case=False)]
+        return best_match_from(subset, user_lower)
+
+    # --- 3. Debit Cards ---
+    if "debit" in user_lower:
+        subset = qa_df[qa_df["question"].str.contains("debit", case=False)]
+        return best_match_from(subset, user_lower)
+
+    # --- 4. Savings Accounts ---
+    if any(word in user_lower for word in ["savings", "hysa", "bank account"]):
+        subset = qa_df[qa_df["question"].str.contains("savings|hysa|bank account", case=False, regex=True)]
+        return best_match_from(subset, user_lower)
+
+    # --- 5. APY ---
+    if "apy" in user_lower:
+        subset = qa_df[qa_df["question"].str.contains("apy", case=False)]
+        return best_match_from(subset, user_lower)
+
+    # --- 6. ETFs / Investing ---
+    if any(word in user_lower for word in ["etf", "stock", "bond", "invest"]):
+        subset = qa_df[qa_df["question"].str.contains("etf|stock|bond|invest", case=False, regex=True)]
+        return best_match_from(subset, user_lower)
+
+    # --- DEFAULT: All questions ---
+    return best_match_from(qa_df, user_lower)
+
+
+# ------------------------------- #
+# ---------- CHAT BOT ----------- #
+# ------------------------------- #
+
 
 # ---- UI Header ----
 st.title("💬 Savings Calculator Chatbot")
-st.caption("Disclaimer!: This tiny bot answers questions using a CSV file, therefore it might have some limitations.")
+st.caption("Disclaimer: This bot answers questions using a CSV file. Accuracy depends on the questions inside your dataset.")
 
 # ---- Initialize chat history ----
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hi! Ask me anything about savings, APY, or your calculator 👇"}
+        {"role": "assistant", "content": "Hi! Ask me anything about savings, APY, or your calculator 👇"},
+        {"role": "meta", "matched_q": None}  # placeholder for matched questions
     ]
 
-# ---- Display history ----
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+# ---- Display Chat History ----
+for i, message in enumerate(st.session_state.messages):
+    if message["role"] == "assistant":
+        with st.chat_message("assistant"):
+            st.markdown(message["content"])
+            # If matched question metadata exists, show it
+            if "matched_q" in message and message["matched_q"]:
+                st.caption(f"Matched question: **{message['matched_q']}**")
+    elif message["role"] == "user":
+        with st.chat_message("user"):
+            st.markdown(message["content"])
 
 # ---- User input ----
 if prompt := st.chat_input("Ask me a question..."):
@@ -104,11 +163,11 @@ if prompt := st.chat_input("Ask me a question..."):
         st.markdown(prompt)
 
     # Generate assistant response
+    answer, matched_question = get_best_answer(prompt)
+
     with st.chat_message("assistant"):
         placeholder = st.empty()
         full_response = ""
-
-        answer = get_best_answer(prompt)
 
         # typing effect
         for chunk in answer.split():
@@ -117,6 +176,15 @@ if prompt := st.chat_input("Ask me a question..."):
             placeholder.markdown(full_response + "▌")
         placeholder.markdown(full_response)
 
-    # add bot response to history
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+        # Show matched question
+        if matched_question:
+            st.caption(f"Matched question: **{matched_question}**")
+
+    # Save bot response to history (including matched question for future display)
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": full_response,
+        "matched_q": matched_question
+    })
+
 
